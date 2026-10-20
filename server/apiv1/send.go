@@ -14,6 +14,7 @@ import (
 
 	"github.com/axllent/mailpit/config"
 	"github.com/axllent/mailpit/internal/smtpd"
+	"github.com/axllent/mailpit/internal/tenancy"
 	"github.com/axllent/mailpit/internal/tools"
 	"github.com/jhillyerd/enmime/v2"
 )
@@ -75,7 +76,7 @@ func SendMessageHandler(w http.ResponseWriter, r *http.Request) {
 		httpAuthUser = &user
 	}
 
-	id, err := data.Send(r.RemoteAddr, httpAuthUser)
+	id, err := data.Send(tenancy.ProjectID(r), r.RemoteAddr, httpAuthUser)
 
 	if err != nil {
 		httpJSONError(w, err.Error())
@@ -90,7 +91,7 @@ func SendMessageHandler(w http.ResponseWriter, r *http.Request) {
 
 // Send will validate the message structure and attempt to send to Mailpit.
 // It returns a sending summary or an error.
-func (d sendMessageParams) Send(remoteAddr string, httpAuthUser *string) (string, error) {
+func (d sendMessageParams) Send(projectID, remoteAddr string, httpAuthUser *string) (string, error) {
 	ip, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
 		return "", fmt.Errorf("error parsing request RemoteAddr: %s", err.Error())
@@ -215,7 +216,7 @@ func (d sendMessageParams) Send(remoteAddr string, httpAuthUser *string) (string
 		return "", fmt.Errorf("error building message: %s", err.Error())
 	}
 
-	return smtpd.SaveToDatabase(ipAddr, d.Body.From.Email, addresses, buff.Bytes(), httpAuthUser)
+	return smtpd.SaveToDatabase(projectID, ipAddr, d.Body.From.Email, addresses, buff.Bytes(), httpAuthUser)
 }
 
 // validHeaderKey returns true if s is a valid RFC 5322 header field name.

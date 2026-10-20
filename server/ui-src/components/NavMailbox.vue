@@ -1,4 +1,5 @@
 <script>
+import AppProjectNav from "./AppProjectNav.vue";
 import NavSelected from "../components/NavSelected.vue";
 import AjaxLoader from "./AjaxLoader.vue";
 import CommonMixins from "../mixins/CommonMixins";
@@ -7,6 +8,7 @@ import { pagination } from "../stores/pagination";
 
 export default {
 	components: {
+		AppProjectNav,
 		NavSelected,
 		AjaxLoader,
 	},
@@ -65,6 +67,8 @@ export default {
 
 <template>
 	<template v-if="!modals">
+		<AppProjectNav />
+
 		<div v-if="mailbox.uiConfig.Label" class="text-center badge text-bg-primary py-2 my-2 w-100">
 			<div class="text-truncate fw-normal" style="line-height: 1rem">
 				{{ mailbox.uiConfig.Label }}

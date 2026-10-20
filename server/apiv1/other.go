@@ -11,6 +11,7 @@ import (
 	"github.com/axllent/mailpit/internal/linkcheck"
 	"github.com/axllent/mailpit/internal/spamassassin"
 	"github.com/axllent/mailpit/internal/storage"
+	"github.com/axllent/mailpit/internal/tenancy"
 	"github.com/jhillyerd/enmime/v2"
 )
 
@@ -38,14 +39,14 @@ func HTMLCheck(w http.ResponseWriter, r *http.Request) {
 
 	if id == "latest" {
 		var err error
-		id, err = storage.LatestID(r)
+		id, err = storage.LatestID(tenancy.ProjectID(r), r)
 		if err != nil {
 			fourOFour(w)
 			return
 		}
 	}
 
-	raw, err := storage.GetMessageRaw(id)
+	raw, err := storage.GetMessageRaw(tenancy.ProjectID(r), id)
 	if err != nil {
 		fourOFour(w)
 		return
@@ -107,14 +108,14 @@ func LinkCheck(w http.ResponseWriter, r *http.Request) {
 
 	if id == "latest" {
 		var err error
-		id, err = storage.LatestID(r)
+		id, err = storage.LatestID(tenancy.ProjectID(r), r)
 		if err != nil {
 			fourOFour(w)
 			return
 		}
 	}
 
-	msg, err := storage.GetMessage(id)
+	msg, err := storage.GetMessage(tenancy.ProjectID(r), id)
 	if err != nil {
 		fourOFour(w)
 		return
@@ -159,7 +160,7 @@ func SpamAssassinCheck(w http.ResponseWriter, r *http.Request) {
 
 	if id == "latest" {
 		var err error
-		id, err = storage.LatestID(r)
+		id, err = storage.LatestID(tenancy.ProjectID(r), r)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(404)
@@ -168,7 +169,7 @@ func SpamAssassinCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	msg, err := storage.GetMessageRaw(id)
+	msg, err := storage.GetMessageRaw(tenancy.ProjectID(r), id)
 	if err != nil {
 		fourOFour(w)
 		return

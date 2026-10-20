@@ -10,6 +10,7 @@ import (
 	"github.com/axllent/mailpit/config"
 	"github.com/axllent/mailpit/internal/logger"
 	"github.com/axllent/mailpit/internal/storage"
+	"github.com/axllent/mailpit/internal/tenancy"
 	"github.com/axllent/mailpit/internal/tools"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -42,7 +43,7 @@ func GetMessageHTML(w http.ResponseWriter, r *http.Request) {
 
 	if id == "latest" {
 		var err error
-		id, err = storage.LatestID(r)
+		id, err = storage.LatestID(tenancy.ProjectID(r), r)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(404)
@@ -51,7 +52,7 @@ func GetMessageHTML(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	msg, err := storage.GetMessage(id)
+	msg, err := storage.GetMessage(tenancy.ProjectID(r), id)
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(404)
@@ -129,7 +130,7 @@ func GetMessageText(w http.ResponseWriter, r *http.Request) {
 
 	if id == "latest" {
 		var err error
-		id, err = storage.LatestID(r)
+		id, err = storage.LatestID(tenancy.ProjectID(r), r)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(404)
@@ -138,7 +139,7 @@ func GetMessageText(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	msg, err := storage.GetMessage(id)
+	msg, err := storage.GetMessage(tenancy.ProjectID(r), id)
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(404)

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/axllent/mailpit/internal/storage"
+	"github.com/axllent/mailpit/internal/tenancy"
 	"github.com/axllent/mailpit/internal/thumbnail"
 )
 
@@ -38,7 +39,7 @@ func Thumbnail(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	partID := r.PathValue("partID")
 
-	a, err := storage.GetAttachmentPart(id, partID)
+	a, err := storage.GetAttachmentPart(tenancy.ProjectID(r), id, partID)
 	if err != nil {
 		httpError(w, err.Error())
 		return

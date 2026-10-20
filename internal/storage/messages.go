@@ -29,8 +29,9 @@ import (
 
 // Store will save an email to the database tables.
 // The username is the authentication username of either the SMTP or HTTP client (blank for none).
+// The message is stored in the project (blank in single mailbox mode).
 // Returns the database ID of the saved message.
-func Store(body *[]byte, username *string) (string, error) {
+func Store(projectID string, body *[]byte, username *string) (string, error) {
 	// Parse message body with enmime
 	env, err := envelopeParser.ReadEnvelope(bytes.NewReader(*body))
 	if err != nil {
@@ -96,13 +97,13 @@ func Store(body *[]byte, username *string) (string, error) {
 	snippet := tools.CreateSnippet(env.Text, env.HTML)
 
 	sql := fmt.Sprintf(`INSERT INTO %s 
-    	(Created, ID, MessageID, Subject, Metadata, Size, Inline, Attachments, SearchText, Read, Snippet) 
-	    VALUES(?,?,?,?,?,?,?,?,?,0,?)`,
+    	(Created, ID, MessageID, Subject, Metadata, Size, Inline, Attachments, SearchText, Read, Snippet, ProjectID) 
+	    VALUES(?,?,?,?,?,?,?,?,?,0,?,?)`,
 		tenant("mailbox"),
 	) // #nosec
 
 	// insert mail summary data
-	_, err = tx.Exec(sql, created.UnixMilli(), id, messageID, subject, string(summaryJSON), size, inline, attachments, searchText, snippet)
+	_, err = tx.Exec(sql, created.UnixMilli(), id, messageID, subject, string(summaryJSON), size, inline, attachments, searchText, snippet, projectID)
 	if err != nil {
 		return "", err
 	}
@@ -158,7 +159,7 @@ func Store(body *[]byte, username *string) (string, error) {
 
 	setTags := []string{}
 	if len(tags) > 0 {
-		setTags, err = SetMessageTags(id, tags)
+		setTags, err = setMessageTags(projectID, id, tags)
 		if err != nil {
 			return "", err
 		}
@@ -199,12 +200,12 @@ func Store(body *[]byte, username *string) (string, error) {
 		c.ReplyTo = []*mail.Address{}
 	}
 
-	websockets.Broadcast("new", c)
+	websockets.Broadcast(projectID, "new", c)
 	webhook.Send(c)
 
 	dbLastAction = time.Now()
 
-	BroadcastMailboxStats()
+	BroadcastMailboxStats(projectID)
 
 	logger.Log().Debugf("[db] saved message %s (%d bytes)", id, size)
 
@@ -213,13 +214,15 @@ func Store(body *[]byte, username *string) (string, error) {
 
 // List returns a subset of messages from the mailbox,
 // sorted latest to oldest
-func List(start int, beforeTS int64, limit int) ([]MessageSummary, error) {
+func List(projectID string, start int, beforeTS int64, limit int) ([]MessageSummary, error) {
 	results := []MessageSummary{}
 	tsStart := time.Now()
 
 	q := sqlf.From(tenant("mailbox") + " m").
 		Select(`m.Created, m.ID, m.MessageID, m.Subject, m.Metadata, m.Size, m.Attachments, m.Read, m.Snippet`).
 		OrderBy("m.Created DESC")
+
+	q = scopeProject(q, "m.ProjectID", projectID)
 
 	if limit > 0 {
 		q = q.Limit(limit).Offset(start)
@@ -305,14 +308,18 @@ func List(start int, beforeTS int64, limit int) ([]MessageSummary, error) {
 
 // GetMessage returns a Message generated from the mailbox_data collection.
 // If the message lacks a date header, then the received datetime is used.
-func GetMessage(id string) (*Message, error) {
+func GetMessage(projectID, id string) (*Message, error) {
+	if !messageInProject(projectID, id) {
+		return nil, errors.New("message not found")
+	}
+
 	env, rawSize, err := getCachedEnvelope(id)
 	if err != nil {
 		return nil, err
 	}
 
 	// Load metadata from DB
-	meta, err := GetMetadata(id)
+	meta, err := getMetadata(id)
 	if err != nil {
 		meta = Metadata{}
 	}
@@ -409,7 +416,7 @@ func GetMessage(id string) (*Message, error) {
 	}
 
 	// mark message as read
-	if err := MarkRead([]string{id}); err != nil {
+	if err := MarkRead(projectID, []string{id}); err != nil {
 		return &obj, err
 	}
 
@@ -419,7 +426,11 @@ func GetMessage(id string) (*Message, error) {
 }
 
 // GetMessageRaw returns an []byte of the full message
-func GetMessageRaw(id string) ([]byte, error) {
+func GetMessageRaw(projectID, id string) ([]byte, error) {
+	if !messageInProject(projectID, id) {
+		return nil, errors.New("message not found")
+	}
+
 	var i, msg string
 	var compressed int
 	q := sqlf.From(tenant("mailbox_data")).
@@ -461,7 +472,11 @@ func GetMessageRaw(id string) ([]byte, error) {
 }
 
 // GetAttachmentPart returns an *enmime.Part (attachment or inline) from a message
-func GetAttachmentPart(id, partID string) (*enmime.Part, error) {
+func GetAttachmentPart(projectID, id, partID string) (*enmime.Part, error) {
+	if !messageInProject(projectID, id) {
+		return nil, errors.New("message not found")
+	}
+
 	env, _, err := getCachedEnvelope(id)
 	if err != nil {
 		return nil, err
@@ -517,18 +532,18 @@ func AttachmentSummary(a *enmime.Part) Attachment {
 //
 // If a query argument is set in the request the function will return the
 // latest message matching the search
-func LatestID(r *http.Request) (string, error) {
+func LatestID(projectID string, r *http.Request) (string, error) {
 	var messages []MessageSummary
 	var err error
 
 	search := strings.TrimSpace(r.URL.Query().Get("query"))
 	if search != "" {
-		messages, _, err = Search(search, r.URL.Query().Get("tz"), 0, 0, 1)
+		messages, _, err = Search(projectID, search, r.URL.Query().Get("tz"), 0, 0, 1)
 		if err != nil {
 			return "", err
 		}
 	} else {
-		messages, err = List(0, 0, 1)
+		messages, err = List(projectID, 0, 0, 1)
 		if err != nil {
 			return "", err
 		}
@@ -541,7 +556,7 @@ func LatestID(r *http.Request) (string, error) {
 }
 
 // MarkRead will mark a message as read
-func MarkRead(ids []string) error {
+func MarkRead(projectID string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -554,7 +569,7 @@ func MarkRead(ids []string) error {
 
 	// Find which messages are actually unread (will change state)
 	toUpdate := []string{}
-	rows, err := db.Query(fmt.Sprintf(`SELECT ID FROM %s WHERE Read = 0 AND ID IN %s`, tenant("mailbox"), placeholder), args...) // #nosec
+	rows, err := db.Query(projectQuery(fmt.Sprintf(`SELECT ID FROM %s WHERE Read = 0 AND ID IN %s`, tenant("mailbox"), placeholder), projectID), projectArgs(args, projectID)...) // #nosec
 	if err != nil {
 		return err
 	}
@@ -584,19 +599,19 @@ func MarkRead(ids []string) error {
 
 	for _, id := range toUpdate {
 		logger.Log().Debugf("[db] marked message %s as read", id)
-		websockets.Broadcast("update", struct {
+		websockets.Broadcast(projectID, "update", struct {
 			ID   string
 			Read bool
 		}{ID: id, Read: true})
 	}
 
-	BroadcastMailboxStats()
+	BroadcastMailboxStats(projectID)
 
 	return nil
 }
 
 // MarkUnread will mark a message as unread
-func MarkUnread(ids []string) error {
+func MarkUnread(projectID string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -609,7 +624,7 @@ func MarkUnread(ids []string) error {
 
 	// Find which messages are actually read (will change state)
 	toUpdate := []string{}
-	rows, err := db.Query(fmt.Sprintf(`SELECT ID FROM %s WHERE Read = 1 AND ID IN %s`, tenant("mailbox"), placeholder), args...) // #nosec
+	rows, err := db.Query(projectQuery(fmt.Sprintf(`SELECT ID FROM %s WHERE Read = 1 AND ID IN %s`, tenant("mailbox"), placeholder), projectID), projectArgs(args, projectID)...) // #nosec
 	if err != nil {
 		return err
 	}
@@ -641,28 +656,29 @@ func MarkUnread(ids []string) error {
 
 	for _, id := range toUpdate {
 		logger.Log().Debugf("[db] marked message %s as unread", id)
-		websockets.Broadcast("update", struct {
+		websockets.Broadcast(projectID, "update", struct {
 			ID   string
 			Read bool
 		}{ID: id, Read: false})
 	}
 
-	BroadcastMailboxStats()
+	BroadcastMailboxStats(projectID)
 
 	return nil
 }
 
 // MarkAllRead will mark all messages as read
-func MarkAllRead() error {
+func MarkAllRead(projectID string) error {
 	var (
 		start = time.Now()
-		total = CountUnread()
+		total = CountUnread(projectID)
 	)
 
-	_, err := sqlf.Update(tenant("mailbox")).
+	q := sqlf.Update(tenant("mailbox")).
 		Set("Read", 1).
-		Where("Read = ?", 0).
-		ExecAndClose(context.Background(), db)
+		Where("Read = ?", 0)
+
+	_, err := scopeProject(q, "ProjectID", projectID).ExecAndClose(context.Background(), db)
 	if err != nil {
 		return err
 	}
@@ -670,7 +686,7 @@ func MarkAllRead() error {
 	elapsed := time.Since(start)
 	logger.Log().Debugf("[db] marked %v messages as read in %s", total, elapsed)
 
-	BroadcastMailboxStats()
+	BroadcastMailboxStats(projectID)
 
 	dbLastAction = time.Now()
 
@@ -678,16 +694,17 @@ func MarkAllRead() error {
 }
 
 // MarkAllUnread will mark all messages as unread
-func MarkAllUnread() error {
+func MarkAllUnread(projectID string) error {
 	var (
 		start = time.Now()
-		total = CountRead()
+		total = CountRead(projectID)
 	)
 
-	_, err := sqlf.Update(tenant("mailbox")).
+	q := sqlf.Update(tenant("mailbox")).
 		Set("Read", 0).
-		Where("Read = ?", 1).
-		ExecAndClose(context.Background(), db)
+		Where("Read = ?", 1)
+
+	_, err := scopeProject(q, "ProjectID", projectID).ExecAndClose(context.Background(), db)
 	if err != nil {
 		return err
 	}
@@ -695,7 +712,7 @@ func MarkAllUnread() error {
 	elapsed := time.Since(start)
 	logger.Log().Debugf("[db] marked %v messages as unread in %s", total, elapsed)
 
-	BroadcastMailboxStats()
+	BroadcastMailboxStats(projectID)
 
 	dbLastAction = time.Now()
 
@@ -703,7 +720,7 @@ func MarkAllUnread() error {
 }
 
 // DeleteMessages deletes one or more messages in bulk
-func DeleteMessages(ids []string) error {
+func DeleteMessages(projectID string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -715,8 +732,8 @@ func DeleteMessages(ids []string) error {
 		args[i] = id
 	}
 
-	sql := fmt.Sprintf(`SELECT ID, Size FROM %s WHERE  ID IN (?%s)`, tenant("mailbox"), strings.Repeat(",?", len(args)-1)) // #nosec
-	rows, err := db.Query(sql, args...)
+	sql := projectQuery(fmt.Sprintf(`SELECT ID, Size FROM %s WHERE  ID IN (?%s)`, tenant("mailbox"), strings.Repeat(",?", len(args)-1)), projectID) // #nosec
+	rows, err := db.Query(sql, projectArgs(args, projectID)...)
 	if err != nil {
 		return err
 	}
@@ -788,7 +805,7 @@ func DeleteMessages(ids []string) error {
 
 	logger.Log().Debugf("[db] deleted %d %s in %s", len(toDelete), messages, elapsed)
 
-	BroadcastMailboxStats()
+	BroadcastMailboxStats(projectID)
 
 	// broadcast individual message deletions
 	for _, id := range toDelete {
@@ -798,22 +815,24 @@ func DeleteMessages(ids []string) error {
 			ID string
 		}{ID: id}
 
-		websockets.Broadcast("delete", d)
+		websockets.Broadcast(projectID, "delete", d)
 	}
 
 	return nil
 }
 
-// DeleteAllMessages will delete all messages from a mailbox
-func DeleteAllMessages() error {
+// DeleteAllMessages will delete all messages from a mailbox (project)
+func DeleteAllMessages(projectID string) error {
 	var (
-		start = time.Now()
-		total int
+		start     = time.Now()
+		total     int
+		totalSize float64 // use float64 for rqlite compatibility
 	)
 
-	_ = sqlf.From(tenant("mailbox")).
+	q := sqlf.From(tenant("mailbox")).
 		Select("COUNT(*)").To(&total).
-		QueryRowAndClose(context.TODO(), db)
+		Select("IFNULL(SUM(Size), 0)").To(&totalSize)
+	_ = scopeProject(q, "ProjectID", projectID).QueryRowAndClose(context.TODO(), db)
 
 	// begin a transaction to ensure both the message
 	// summaries and data are deleted successfully
@@ -825,13 +844,25 @@ func DeleteAllMessages() error {
 	// roll back if it fails
 	defer func() { _ = tx.Rollback() }()
 
-	tables := []string{"mailbox", "mailbox_data", "tags", "message_tags"}
+	if projectID == AllProjects {
+		for _, t := range []string{"mailbox", "mailbox_data", "tags", "message_tags"} {
+			if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s`, tenant(t))); err != nil { // #nosec
+				return err
+			}
+		}
+	} else {
+		// the dependent tables are deleted first as they use the mailbox table to find the messages
+		queries := []string{
+			fmt.Sprintf(`DELETE FROM %s WHERE ID IN (SELECT ID FROM %s WHERE ProjectID = ?)`, tenant("mailbox_data"), tenant("mailbox")),
+			fmt.Sprintf(`DELETE FROM %s WHERE ID IN (SELECT ID FROM %s WHERE ProjectID = ?)`, tenant("message_tags"), tenant("mailbox")),
+			fmt.Sprintf(`DELETE FROM %s WHERE ProjectID = ?`, tenant("mailbox")),
+			fmt.Sprintf(`DELETE FROM %s WHERE ProjectID = ?`, tenant("tags")),
+		}
 
-	for _, t := range tables {
-		sql := fmt.Sprintf(`DELETE FROM %s`, tenant(t)) // #nosec
-		_, err := tx.Exec(sql)
-		if err != nil {
-			return err
+		for _, query := range queries {
+			if _, err := tx.Exec(query, projectID); err != nil { // #nosec
+				return err
+			}
 		}
 	}
 
@@ -842,26 +873,41 @@ func DeleteAllMessages() error {
 	elapsed := time.Since(start)
 	logger.Log().Debugf("[db] deleted %d messages in %s", total, elapsed)
 
-	vacuumDb()
-
 	dbLastAction = time.Now()
-	if err := SettingPut("DeletedSize", "0"); err != nil {
-		logger.Log().Warnf("[db] %s", err.Error())
+
+	if config.MultiProject {
+		// the database is shared with other projects, so vacuuming is left to the idle cron
+		addDeletedSize(uint64(totalSize))
+	} else {
+		vacuumDb()
+
+		if err := SettingPut("DeletedSize", "0"); err != nil {
+			logger.Log().Warnf("[db] %s", err.Error())
+		}
 	}
 
 	logMessagesDeleted(total)
 
-	BroadcastMailboxStats()
+	BroadcastMailboxStats(projectID)
 
 	invalidateAllEnvelopeCache()
 
-	websockets.Broadcast("truncate", nil)
+	websockets.Broadcast(projectID, "truncate", nil)
 
 	return err
 }
 
 // GetMetadata retrieves the metadata for a message by its ID
-func GetMetadata(id string) (Metadata, error) {
+func GetMetadata(projectID, id string) (Metadata, error) {
+	if !messageInProject(projectID, id) {
+		return Metadata{}, errors.New("message not found")
+	}
+
+	return getMetadata(id)
+}
+
+// getMetadata retrieves the metadata for a message by its ID, without checking the project
+func getMetadata(id string) (Metadata, error) {
 	var metadataJSON string
 	row := db.QueryRow(fmt.Sprintf("SELECT Metadata FROM %s WHERE ID = ?", tenant("mailbox")), id)
 	if err := row.Scan(&metadataJSON); err != nil {

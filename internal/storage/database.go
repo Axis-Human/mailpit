@@ -138,6 +138,12 @@ func InitDB() error {
 
 	LoadTagFilters()
 
+	if config.MultiProject {
+		if err := EnsureSuperAdmin(); err != nil {
+			return err
+		}
+	}
+
 	dbLastAction = time.Now()
 
 	sigs := make(chan os.Signal, 1)
@@ -191,11 +197,11 @@ func Ping() error {
 }
 
 // StatsGet returns the total/unread statistics for a mailbox
-func StatsGet() MailboxStats {
+func StatsGet(projectID string) MailboxStats {
 	var (
-		total  = CountTotal()
-		unread = CountUnread()
-		tags   = GetAllTags()
+		total  = CountTotal(projectID)
+		unread = CountUnread(projectID)
+		tags   = GetAllTags(projectID)
 	)
 
 	dbLastAction = time.Now()
@@ -208,36 +214,39 @@ func StatsGet() MailboxStats {
 }
 
 // CountTotal returns the number of emails in the database
-func CountTotal() uint64 {
+func CountTotal(projectID string) uint64 {
 	var total float64 // use float64 for rqlite compatibility
 
-	_ = sqlf.From(tenant("mailbox")).
-		Select("COUNT(*)").To(&total).
-		QueryRowAndClose(context.TODO(), db)
+	q := sqlf.From(tenant("mailbox")).
+		Select("COUNT(*)").To(&total)
+
+	_ = scopeProject(q, "ProjectID", projectID).QueryRowAndClose(context.TODO(), db)
 
 	return uint64(total)
 }
 
 // CountUnread returns the number of emails in the database that are unread.
-func CountUnread() uint64 {
+func CountUnread(projectID string) uint64 {
 	var total float64 // use float64 for rqlite compatibility
 
-	_ = sqlf.From(tenant("mailbox")).
+	q := sqlf.From(tenant("mailbox")).
 		Select("COUNT(*)").To(&total).
-		Where("Read = ?", 0).
-		QueryRowAndClose(context.TODO(), db)
+		Where("Read = ?", 0)
+
+	_ = scopeProject(q, "ProjectID", projectID).QueryRowAndClose(context.TODO(), db)
 
 	return uint64(total)
 }
 
 // CountRead returns the number of emails in the database that are read.
-func CountRead() uint64 {
+func CountRead(projectID string) uint64 {
 	var total float64 // use float64 for rqlite compatibility
 
-	_ = sqlf.From(tenant("mailbox")).
+	q := sqlf.From(tenant("mailbox")).
 		Select("COUNT(*)").To(&total).
-		Where("Read = ?", 1).
-		QueryRowAndClose(context.TODO(), db)
+		Where("Read = ?", 1)
+
+	_ = scopeProject(q, "ProjectID", projectID).QueryRowAndClose(context.TODO(), db)
 
 	return uint64(total)
 }
@@ -256,13 +265,14 @@ func DbSize() uint64 {
 }
 
 // MessageIDExists checks whether a Message-ID exists in the DB
-func MessageIDExists(id string) bool {
+func MessageIDExists(projectID, id string) bool {
 	var total int
 
-	_ = sqlf.From(tenant("mailbox")).
+	q := sqlf.From(tenant("mailbox")).
 		Select("COUNT(*)").To(&total).
-		Where("MessageID = ?", id).
-		QueryRowAndClose(context.TODO(), db)
+		Where("MessageID = ?", id)
+
+	_ = scopeProject(q, "ProjectID", projectID).QueryRowAndClose(context.TODO(), db)
 
 	return total != 0
 }

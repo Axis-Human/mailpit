@@ -7,6 +7,7 @@ import (
 
 	"github.com/axllent/mailpit/config"
 	"github.com/axllent/mailpit/internal/storage"
+	"github.com/axllent/mailpit/internal/tenancy"
 )
 
 // RedirectToLatestMessage (method: GET) redirects the web UI to the latest message
@@ -16,13 +17,13 @@ func RedirectToLatestMessage(w http.ResponseWriter, r *http.Request) {
 
 	search := strings.TrimSpace(r.URL.Query().Get("query"))
 	if search != "" {
-		messages, _, err = storage.Search(search, "", 0, 0, 1)
+		messages, _, err = storage.Search(tenancy.ProjectID(r), search, "", 0, 0, 1)
 		if err != nil {
 			httpError(w, err.Error())
 			return
 		}
 	} else {
-		messages, err = storage.List(0, 0, 1)
+		messages, err = storage.List(tenancy.ProjectID(r), 0, 0, 1)
 		if err != nil {
 			httpError(w, err.Error())
 			return

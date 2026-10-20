@@ -51,6 +51,7 @@ easily handling tens of thousands of emails, with automatic email pruning by vol
 - [Chaos](https://mailpit.axllent.org/docs/integration/chaos/) feature to enable configurable SMTP errors to test application resilience
 - `List-Unsubscribe` syntax validation
 - Optional [webhook](https://mailpit.axllent.org/docs/integration/webhook/) for received messages
+- [Multi-project mode](docs/multi-project.md) (this fork): isolated projects, each with its own API key for SMTP & HTTP API, user logins with per-project access, and a super admin panel to create projects & users and **disable** a project (its API key and incoming mail stop being accepted). Includes a ready-to-use [Docker Compose deployment](docs/multi-project.md#deploy-con-docker-compose)
 
 
 ## Installation
@@ -104,6 +105,27 @@ Run `mailpit -h` to see options. More information can be seen in [the docs](http
 If installed using homebrew, you may run `brew services start mailpit` to always run mailpit automatically.
 
 
+### Multi-project mode
+
+This fork can run a single Mailpit for several projects and teams. Enable it with `--multi-project` (`MP_MULTI_PROJECT=true`), without it Mailpit behaves exactly like upstream.
+
+- **Projects**: separate mailboxes (messages, tags, search, statistics and live updates), each with an API key.
+- **Users**: sign in with email & password, and only see the projects assigned to them.
+- **Super admin**: manages projects & users from the web UI (⚙), can access every project, and can disable a project.
+- **Sending**: SMTP uses the project API key as the password (the username can be anything, the project slug is suggested). The HTTP API accepts the key as `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+
+```shell
+MP_MULTI_PROJECT=true \
+MP_SUPERADMIN_EMAIL=admin@example.com \
+MP_SUPERADMIN_PASSWORD='choose-a-strong-password' \
+MP_DATABASE=/data/mailpit.db \
+MP_SMTP_AUTH_ALLOW_INSECURE=true \
+mailpit
+```
+
+The repository includes a `docker-compose.yaml` for deploying it with Docker. See the [multi-project guide](docs/multi-project.md) (in Spanish) for all options, the deployment steps and the design notes.
+
+
 ### Testing Mailpit
 
 Please refer to [the documentation](https://mailpit.axllent.org/docs/install/testing/) on how to easily test email delivery to Mailpit.
@@ -117,7 +139,6 @@ Mailpit can also act as substitute for sendmail. For instructions on how to set 
 
 ---
 
-<p align="center">
-  For team features, multiple inboxes, and a hosted setup, try
-  <a href="https://mailtrap.io/?ref=mailpit">Mailtrap</a>, our friendly companion.
-</p>
+## License & attribution
+
+Released under the [MIT License](LICENSE). This project is a fork of [Mailpit](https://github.com/axllent/mailpit) by [Ralph Slooten](https://github.com/axllent), and keeps its original copyright notice. Third-party dependencies are listed in the application under *About → Licenses*.

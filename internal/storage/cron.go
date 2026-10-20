@@ -50,6 +50,10 @@ func dbCron() {
 		}
 
 		pruneMessages()
+
+		if config.MultiProject {
+			purgeExpiredSessions()
+		}
 	}
 }
 
@@ -64,37 +68,46 @@ func pruneMessages() {
 
 	ids := []string{}
 	idsSeen := make(map[string]bool)
+	prunedProjects := make(map[string]bool)
 	var prunedSize uint64
 	var size float64 // use float64 for rqlite compatibility
 
-	// prune using `--max` if set
-	if config.MaxMessages > 0 && CountTotal() > uint64(config.MaxMessages) {
-		offset := config.MaxMessages
-		if config.DemoMode {
-			offset = 500
-		}
-		q := sqlf.Select("ID, Size").
-			From(tenant("mailbox")).
-			OrderBy("Created DESC").
-			Limit(5000).
-			Offset(offset)
+	// prune using `--max` if set, the limit applies to each project
+	if config.MaxMessages > 0 {
+		for _, projectID := range messageProjectIDs() {
+			if CountTotal(projectID) <= uint64(config.MaxMessages) {
+				continue
+			}
 
-		if err := q.QueryAndClose(
-			context.TODO(), db, func(row *sql.Rows) {
-				var id string
+			offset := config.MaxMessages
+			if config.DemoMode {
+				offset = 500
+			}
+			q := sqlf.Select("ID, Size").
+				From(tenant("mailbox")).
+				Where("ProjectID = ?", projectID).
+				OrderBy("Created DESC").
+				Limit(5000).
+				Offset(offset)
 
-				if err := row.Scan(&id, &size); err != nil {
-					logger.Log().Errorf("[db] %s", err.Error())
-					return
-				}
-				ids = append(ids, id)
-				idsSeen[id] = true
-				prunedSize = prunedSize + uint64(size)
+			if err := q.QueryAndClose(
+				context.TODO(), db, func(row *sql.Rows) {
+					var id string
 
-			},
-		); err != nil {
-			logger.Log().Errorf("[db] %s", err.Error())
-			return
+					if err := row.Scan(&id, &size); err != nil {
+						logger.Log().Errorf("[db] %s", err.Error())
+						return
+					}
+					ids = append(ids, id)
+					idsSeen[id] = true
+					prunedProjects[projectID] = true
+					prunedSize = prunedSize + uint64(size)
+
+				},
+			); err != nil {
+				logger.Log().Errorf("[db] %s", err.Error())
+				return
+			}
 		}
 	}
 
@@ -103,15 +116,15 @@ func pruneMessages() {
 		// now() minus the number of hours
 		ts := time.Now().Add(time.Duration(-config.MaxAgeInHours) * time.Hour).UnixMilli()
 
-		q := sqlf.Select("ID, Size").
+		q := sqlf.Select("ID, Size, ProjectID").
 			From(tenant("mailbox")).
 			Where("Created < ?", ts).
 			Limit(5000)
 
 		if err := q.QueryAndClose(context.TODO(), db, func(row *sql.Rows) {
-			var id string
+			var id, projectID string
 
-			if err := row.Scan(&id, &size); err != nil {
+			if err := row.Scan(&id, &size, &projectID); err != nil {
 				logger.Log().Errorf("[db] %s", err.Error())
 				return
 			}
@@ -119,6 +132,7 @@ func pruneMessages() {
 			if _, exists := idsSeen[id]; !exists {
 				ids = append(ids, id)
 				idsSeen[id] = true
+				prunedProjects[projectID] = true
 				prunedSize = prunedSize + uint64(size)
 			}
 
@@ -188,7 +202,29 @@ func pruneMessages() {
 		vacuumDb()
 	}
 
-	websockets.Broadcast("prune", nil)
+	for projectID := range prunedProjects {
+		websockets.Broadcast(projectID, "prune", nil)
+	}
+}
+
+// messageProjectIDs returns the IDs of all projects which have messages
+func messageProjectIDs() []string {
+	ids := []string{}
+
+	if err := sqlf.Select("DISTINCT ProjectID").
+		From(tenant("mailbox")).
+		QueryAndClose(context.TODO(), db, func(row *sql.Rows) {
+			var id string
+			if err := row.Scan(&id); err != nil {
+				logger.Log().Errorf("[db] %s", err.Error())
+				return
+			}
+			ids = append(ids, id)
+		}); err != nil {
+		logger.Log().Errorf("[db] %s", err.Error())
+	}
+
+	return ids
 }
 
 // Vacuum the database to reclaim space from deleted messages

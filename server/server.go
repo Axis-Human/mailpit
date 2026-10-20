@@ -28,6 +28,7 @@ import (
 	"github.com/axllent/mailpit/internal/snakeoil"
 	"github.com/axllent/mailpit/internal/stats"
 	"github.com/axllent/mailpit/internal/storage"
+	"github.com/axllent/mailpit/internal/tenancy"
 	"github.com/axllent/mailpit/internal/tools"
 	"github.com/axllent/mailpit/server/apiv1"
 	"github.com/axllent/mailpit/server/handlers"
@@ -76,21 +77,21 @@ func Listen() {
 	r.HandleFunc("GET "+config.Webroot+"livez", handlers.HealthzHandler)
 	r.HandleFunc("GET "+config.Webroot+"readyz", handlers.ReadyzHandler(isReady))
 
-	// proxy handler for screenshots
-	r.HandleFunc("GET "+config.Webroot+"proxy", middleWareFunc(handlers.ProxyHandler))
+	// proxy handler for screenshots, which checks the project of the message
+	r.HandleFunc("GET "+config.Webroot+"proxy", guardedFunc(accessAny, handlers.ProxyHandler))
 
-	// virtual filesystem for /dist/ & some individual files
-	r.Handle("GET "+config.Webroot+"dist/", middleWareFunc(embedController))
-	r.Handle("GET "+config.Webroot+"api/", middleWareFunc(embedController))
-	r.Handle("GET "+config.Webroot+"favicon.ico", middleWareFunc(embedController))
-	r.Handle("GET "+config.Webroot+"favicon.svg", middleWareFunc(embedController))
-	r.Handle("GET "+config.Webroot+"mailpit.svg", middleWareFunc(embedController))
-	r.Handle("GET "+config.Webroot+"notification.png", middleWareFunc(embedController))
+	// virtual filesystem for /dist/ & some individual files, these are public so the login page can load
+	r.Handle("GET "+config.Webroot+"dist/", publicFunc(embedController))
+	r.Handle("GET "+config.Webroot+"api/", publicFunc(embedController))
+	r.Handle("GET "+config.Webroot+"favicon.ico", publicFunc(embedController))
+	r.Handle("GET "+config.Webroot+"favicon.svg", publicFunc(embedController))
+	r.Handle("GET "+config.Webroot+"mailpit.svg", publicFunc(embedController))
+	r.Handle("GET "+config.Webroot+"notification.png", publicFunc(embedController))
 
 	// redirect to webroot if no trailing slash
 	if config.Webroot != "/" {
 		redirect := strings.TrimRight(config.Webroot, "/")
-		r.HandleFunc("GET "+redirect, middleWareFunc(addSlashToWebroot))
+		r.HandleFunc("GET "+redirect, publicFunc(addSlashToWebroot))
 	}
 
 	// UI shortcut
@@ -99,20 +100,27 @@ func Listen() {
 	// frontend testing + web UI via virtual index.html
 	// Go's ServeMux wildcards must span a full path segment so {id}.html is invalid;
 	// viewHandler dispatches on the path suffix instead.
-	r.HandleFunc("GET "+config.Webroot+"view/", middleWareFunc(viewHandler))
+	r.HandleFunc("GET "+config.Webroot+"view/", publicFunc(viewHandler))
 
-	r.Handle("GET "+config.Webroot+"search", middleWareFunc(index))
+	r.Handle("GET "+config.Webroot+"search", publicFunc(index))
+	if config.MultiProject {
+		r.Handle("GET "+config.Webroot+"admin", publicFunc(index))
+	}
 	// Exact-match the webroot; stdlib "/" is always a subtree so we guard inside.
 	r.HandleFunc("GET "+config.Webroot, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != config.Webroot {
 			http.NotFound(w, r)
 			return
 		}
-		middleWareFunc(index)(w, r)
+		publicFunc(index)(w, r)
 	})
 
 	if auth.UICredentials != nil {
 		logger.Log().Info("[http] enabling basic authentication")
+	}
+
+	if config.MultiProject {
+		logger.Log().Info("[http] enabling multi-project mode with user logins & project API keys")
 	}
 
 	// Mark the application here as ready
@@ -214,7 +222,9 @@ func listenLimited(network, address string) (net.Listener, error) {
 // case, whereas a LAN-reachable listener is the shape most likely to be hit
 // in practice and is worth flagging explicitly.
 func warnIfExposedWithoutHostProtection() {
-	if AllowedHosts != "" || auth.UICredentials != nil {
+	if AllowedHosts != "" || auth.UICredentials != nil || config.MultiProject {
+		// in multi-project mode everything requires a login or API key, the session cookie
+		// is never sent to a rebound host name
 		return
 	}
 	if _, _, isSocket := tools.UnixSocket(config.HTTPListen); isSocket {
@@ -264,16 +274,36 @@ func apiRoutes() *http.ServeMux {
 	}
 	r.HandleFunc("GET "+config.Webroot+"api/v1/message/{id}", middleWareFunc(apiv1.GetMessage))
 	r.HandleFunc("GET "+config.Webroot+"api/v1/info", middleWareFunc(apiv1.AppInfo))
-	r.HandleFunc("GET "+config.Webroot+"api/licenses", middleWareFunc(licenseInfo))
-	r.HandleFunc("GET "+config.Webroot+"api/v1/webui", middleWareFunc(apiv1.WebUIConfig))
-	r.HandleFunc("GET "+config.Webroot+"api/v1/swagger.json", middleWareFunc(swaggerBasePath))
+	r.HandleFunc("GET "+config.Webroot+"api/licenses", guardedFunc(accessAny, licenseInfo))
+	r.HandleFunc("GET "+config.Webroot+"api/v1/webui", guardedFunc(accessAny, apiv1.WebUIConfig))
+	r.HandleFunc("GET "+config.Webroot+"api/v1/swagger.json", publicFunc(swaggerBasePath))
 
-	// Chaos
-	r.HandleFunc("GET "+config.Webroot+"api/v1/chaos", middleWareFunc(apiv1.GetChaos))
-	r.HandleFunc("PUT "+config.Webroot+"api/v1/chaos", middleWareFunc(apiv1.SetChaos))
+	// Chaos changes the behaviour of the SMTP server for everyone, so only a super admin can change it
+	r.HandleFunc("GET "+config.Webroot+"api/v1/chaos", guardedFunc(accessAny, apiv1.GetChaos))
+	r.HandleFunc("PUT "+config.Webroot+"api/v1/chaos", guardedFunc(accessAdmin, apiv1.SetChaos))
 
-	// Prometheus metrics (if enabled and using existing server)
-	if prometheus.GetMode() == "integrated" {
+	// Login, logout & status of the web UI
+	r.HandleFunc("GET "+config.Webroot+"api/v1/auth/status", publicFunc(authStatusHandler))
+	if config.MultiProject {
+		r.HandleFunc("POST "+config.Webroot+"api/v1/auth/login", publicFunc(loginHandler))
+		r.HandleFunc("POST "+config.Webroot+"api/v1/auth/logout", publicFunc(logoutHandler))
+		r.HandleFunc("PUT "+config.Webroot+"api/v1/auth/password", guardedFunc(accessAny, changePasswordHandler))
+
+		// Projects & users, super admin only
+		r.HandleFunc("GET "+config.Webroot+"api/v1/admin/projects", guardedFunc(accessAdmin, listProjectsHandler))
+		r.HandleFunc("POST "+config.Webroot+"api/v1/admin/projects", guardedFunc(accessAdmin, createProjectHandler))
+		r.HandleFunc("PUT "+config.Webroot+"api/v1/admin/projects/{id}", guardedFunc(accessAdmin, updateProjectHandler))
+		r.HandleFunc("DELETE "+config.Webroot+"api/v1/admin/projects/{id}", guardedFunc(accessAdmin, deleteProjectHandler))
+		r.HandleFunc("POST "+config.Webroot+"api/v1/admin/projects/{id}/api-key", guardedFunc(accessAdmin, rotateProjectKeyHandler))
+		r.HandleFunc("GET "+config.Webroot+"api/v1/admin/users", guardedFunc(accessAdmin, listUsersHandler))
+		r.HandleFunc("POST "+config.Webroot+"api/v1/admin/users", guardedFunc(accessAdmin, createUserHandler))
+		r.HandleFunc("PUT "+config.Webroot+"api/v1/admin/users/{id}", guardedFunc(accessAdmin, updateUserHandler))
+		r.HandleFunc("DELETE "+config.Webroot+"api/v1/admin/users/{id}", guardedFunc(accessAdmin, deleteUserHandler))
+	}
+
+	// Prometheus metrics (if enabled and using existing server). These are the totals of all
+	// projects, so use a separate server in multi-project mode.
+	if prometheus.GetMode() == "integrated" && !config.MultiProject {
 		r.HandleFunc("GET "+config.Webroot+"metrics", middleWareFunc(func(w http.ResponseWriter, r *http.Request) {
 			prometheus.GetHandler().ServeHTTP(w, r)
 		}))
@@ -283,7 +313,7 @@ func apiRoutes() *http.ServeMux {
 	r.HandleFunc("GET "+config.Webroot+"api/events", middleWareFunc(apiWebsocket))
 
 	// return blank 200 response for OPTIONS requests for CORS
-	r.Handle("OPTIONS "+config.Webroot+"api/v1/", middleWareFunc(apiv1.GetOptions))
+	r.Handle("OPTIONS "+config.Webroot+"api/v1/", publicFunc(apiv1.GetOptions))
 
 	return r
 }
@@ -304,6 +334,12 @@ func sendAPIAuthMiddleware(fn http.HandlerFunc) http.HandlerFunc {
 		// Override the default 5 MB body cap with the send-specific limit so that
 		// middleWareFunc applies config.MaxMessageSize (0 = unlimited) instead.
 		r = r.WithContext(context.WithValue(r.Context(), bodyLimitKey, int64(config.MaxMessageSize)*1024*1024))
+
+		// In multi-project mode the message is sent to the project of the API key (or selected project).
+		if config.MultiProject {
+			middleWareFunc(fn)(w, r)
+			return
+		}
 
 		// If send API auth accept any is enabled, bypass all authentication.
 		if config.SendAPIAuthAcceptAny {
@@ -346,9 +382,22 @@ func (w gzipResponseWriter) Write(b []byte) (int, error) {
 	return w.Writer.Write(b)
 }
 
-// MiddleWareFunc http middleware adds optional basic authentication
+// middleWareFunc http middleware for routes which apply to the messages of a project. It adds
+// optional basic authentication (or the login & project API key in multi-project mode)
 // and gzip compression.
 func middleWareFunc(fn http.HandlerFunc) http.HandlerFunc {
+	return guardedFunc(accessProject, fn)
+}
+
+// publicFunc is the http middleware for routes which do not require authentication in
+// multi-project mode, such as the web UI itself so the login page can load.
+func publicFunc(fn http.HandlerFunc) http.HandlerFunc {
+	return guardedFunc(accessPublic, fn)
+}
+
+// guardedFunc is the http middleware which adds the host & CORS protection, authentication
+// as required by the access level, and gzip compression.
+func guardedFunc(level accessLevel, fn http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Reject requests whose Host header falls outside --allowed-hosts before
 		// any other work. This runs ahead of the CORS check because the
@@ -405,7 +454,14 @@ func middleWareFunc(fn http.HandlerFunc) http.HandlerFunc {
 		// for a specific request without touching the global auth.UICredentials pointer.
 		skipUIAuth, _ := r.Context().Value(skipUIAuthKey).(bool)
 		isCORSOptionsRequest := AccessControlAllowOrigin != "" && r.Method == http.MethodOptions
-		if !skipUIAuth && !isCORSOptionsRequest && auth.UICredentials != nil {
+
+		if config.MultiProject {
+			// users & project API keys replace the (single) UI credentials
+			var ok bool
+			if r, ok = requireAccess(w, r, level); !ok {
+				return
+			}
+		} else if !skipUIAuth && !isCORSOptionsRequest && auth.UICredentials != nil {
 			user, pass, ok := r.BasicAuth()
 
 			if !ok {
@@ -448,9 +504,13 @@ func viewHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, config.Webroot+"view/")
 	switch {
 	case strings.HasSuffix(path, ".html"):
-		apiv1.GetMessageHTML(w, r)
+		if r, ok := requireAccess(w, r, accessProject); ok {
+			apiv1.GetMessageHTML(w, r)
+		}
 	case strings.HasSuffix(path, ".txt"):
-		apiv1.GetMessageText(w, r)
+		if r, ok := requireAccess(w, r, accessProject); ok {
+			apiv1.GetMessageText(w, r)
+		}
 	default:
 		index(w, r)
 	}
@@ -459,8 +519,10 @@ func viewHandler(w http.ResponseWriter, r *http.Request) {
 // Websocket to broadcast changes.
 // Authentication and CORS are handled by middleWareFunc before this is reached.
 func apiWebsocket(w http.ResponseWriter, r *http.Request) {
-	websockets.ServeWs(websockets.MessageHub, w, r)
-	storage.BroadcastMailboxStats()
+	projectID := tenancy.ProjectID(r)
+
+	websockets.ServeWs(websockets.MessageHub, w, r, projectID, tenancy.IsSuperAdmin(r))
+	storage.BroadcastMailboxStats(projectID)
 }
 
 // licenseInfo returns structured license information for Mailpit and its third-party dependencies.

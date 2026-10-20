@@ -29,12 +29,23 @@ var (
 )
 
 // MailHandler handles the incoming message to store in the database
-func mailHandler(origin net.Addr, from string, to []string, data []byte, smtpUser *string) (string, error) {
-	return SaveToDatabase(origin, from, to, data, smtpUser)
+func mailHandler(origin net.Addr, from string, to []string, data []byte, smtpUser *string, projectID string) (string, error) {
+	if config.MultiProject {
+		// the project may have been disabled or deleted since the client authenticated
+		if projectID == "" || !storage.ProjectEnabled(projectID) {
+			logger.Log().Warnf("[smtpd] rejected message from %s (%s): project is disabled", from, cleanIP(origin))
+			stats.LogSMTPRejected()
+
+			return "", errors.New("550 5.7.1 This project has been disabled")
+		}
+	}
+
+	return SaveToDatabase(projectID, origin, from, to, data, smtpUser)
 }
 
-// SaveToDatabase will attempt to save a message to the database
-func SaveToDatabase(origin net.Addr, from string, to []string, data []byte, smtpUser *string) (string, error) {
+// SaveToDatabase will attempt to save a message to the database of a project.
+// The project is blank when not in multi-project mode.
+func SaveToDatabase(projectID string, origin net.Addr, from string, to []string, data []byte, smtpUser *string) (string, error) {
 	if !config.SMTPStrictRFCHeaders && bytes.Contains(data, []byte("\r\r\n")) {
 		// replace all <CR><CR><LF> (\r\r\n) with <CR><LF> (\r\n)
 		// @see https://github.com/axllent/mailpit/issues/87 & https://github.com/axllent/mailpit/issues/153
@@ -66,7 +77,7 @@ func SaveToDatabase(origin net.Addr, from string, to []string, data []byte, smtp
 		// add unique ID
 		data = append([]byte("Message-ID: <"+messageID+">\r\n"), data...)
 	} else if config.IgnoreDuplicateIDs {
-		if storage.MessageIDExists(messageID) {
+		if storage.MessageIDExists(projectID, messageID) {
 			logger.Log().Debugf("[smtpd] duplicate message found, ignoring %s", messageID)
 			stats.LogSMTPIgnored()
 			return "", nil
@@ -137,7 +148,7 @@ func SaveToDatabase(origin net.Addr, from string, to []string, data []byte, smtp
 		logger.Log().Debugf("[smtpd] added missing addresses to Bcc header: %s", strings.Join(missingAddresses, ", "))
 	}
 
-	id, err := storage.Store(&data, smtpUser)
+	id, err := storage.Store(projectID, &data, smtpUser)
 	if err != nil {
 		logger.Log().Errorf("[db] error storing message: %s", err.Error())
 		return "", err
@@ -162,6 +173,27 @@ func authHandler(remoteAddr net.Addr, mechanism string, username []byte, passwor
 	}
 
 	return allow, nil
+}
+
+// authProjectHandler authenticates a client in multi-project mode. The password is the
+// API key of the project, the username can be anything (usually the project slug).
+func authProjectHandler(remoteAddr net.Addr, mechanism string, username []byte, password []byte, _ []byte) (string, bool, error) {
+	p, err := storage.ProjectByAPIKey(string(password))
+	if err != nil {
+		logger.Log().Warnf("[smtpd] deny %s login:%q from:%s", mechanism, string(username), cleanIP(remoteAddr))
+
+		return "", false, nil
+	}
+
+	if p.Disabled {
+		logger.Log().Warnf("[smtpd] deny %s login:%q from:%s, project %s is disabled", mechanism, string(username), cleanIP(remoteAddr), p.Slug)
+
+		return "", false, errors.New("535 5.7.8 This project has been disabled")
+	}
+
+	logger.Log().Debugf("[smtpd] allow %s login:%q project:%s from:%s", mechanism, string(username), p.Slug, cleanIP(remoteAddr))
+
+	return p.ID, true, nil
 }
 
 // Allow any username and password
@@ -189,7 +221,13 @@ func handlerRcpt(remoteAddr net.Addr, from string, to string) bool {
 
 // Listen starts the SMTPD server
 func Listen() error {
-	if config.SMTPAuthAllowInsecure {
+	if config.MultiProject {
+		if config.SMTPAuthAllowInsecure {
+			logger.Log().Info("[smtpd] enabling project API key authentication (insecure)")
+		} else {
+			logger.Log().Info("[smtpd] enabling project API key authentication")
+		}
+	} else if config.SMTPAuthAllowInsecure {
 		if auth.SMTPCredentials != nil {
 			logger.Log().Info("[smtpd] enabling login authentication (insecure)")
 		} else if config.SMTPAuthAcceptAny {
@@ -263,7 +301,21 @@ func listenAndServe(addr string, handler MsgIDHandler, authHandler AuthHandler) 
 		}
 	}
 
-	if auth.SMTPCredentials != nil {
+	if config.MultiProject {
+		// every project has its own API key, which is the SMTP password
+		srv.AuthMechs = map[string]bool{
+			"CRAM-MD5": false,
+			"PLAIN":    true,
+			"LOGIN":    true,
+		}
+		srv.AuthProjectHandler = authProjectHandler
+		srv.AuthHandler = func(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte) (bool, error) {
+			_, ok, err := authProjectHandler(remoteAddr, mechanism, username, password, shared)
+
+			return ok, err
+		}
+		srv.AuthRequired = true
+	} else if auth.SMTPCredentials != nil {
 		srv.AuthMechs = map[string]bool{
 			"CRAM-MD5": false,
 			"PLAIN":    true,
@@ -312,7 +364,7 @@ func listenAndServe(addr string, handler MsgIDHandler, authHandler AuthHandler) 
 				smtpType = "STARTTLS required"
 			} else {
 				smtpType = "STARTTLS optional"
-				if !config.SMTPAuthAllowInsecure && auth.SMTPCredentials != nil {
+				if !config.SMTPAuthAllowInsecure && (auth.SMTPCredentials != nil || config.MultiProject) {
 					smtpType = "STARTTLS required"
 				}
 			}

@@ -15,8 +15,8 @@ type Hub struct {
 	// Registered clients.
 	Clients map[*Client]bool
 
-	// Inbound messages from the clients.
-	Broadcast chan []byte
+	// Messages to broadcast to the clients.
+	Broadcast chan broadcastMessage
 
 	// Register requests from the clients.
 	register chan *Client
@@ -28,6 +28,16 @@ type Hub struct {
 	clientCount atomic.Int64
 }
 
+// AllProjects is the project ID used to broadcast to the clients of every project
+const AllProjects = "*"
+
+// broadcastMessage is a message for the clients of a single project
+type broadcastMessage struct {
+	project   string
+	adminOnly bool
+	data      []byte
+}
+
 // WebsocketNotification struct for responses
 type WebsocketNotification struct {
 	Type string
@@ -37,7 +47,7 @@ type WebsocketNotification struct {
 // NewHub returns a new hub configuration
 func NewHub() *Hub {
 	return &Hub{
-		Broadcast:  make(chan []byte),
+		Broadcast:  make(chan broadcastMessage),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		Clients:    make(map[*Client]bool),
@@ -62,12 +72,18 @@ func (h *Hub) Run() {
 				h.clientCount.Add(-1)
 			}
 		case message := <-h.Broadcast:
-			prepared, err := websocket.NewPreparedMessage(websocket.TextMessage, message)
+			prepared, err := websocket.NewPreparedMessage(websocket.TextMessage, message.data)
 			if err != nil {
 				logger.Log().Errorf("[websocket] error preparing message: %s", err.Error())
 				continue
 			}
 			for client := range h.Clients {
+				if message.project != AllProjects && client.project != message.project {
+					continue
+				}
+				if message.adminOnly && !client.admin {
+					continue
+				}
 				select {
 				case client.send <- prepared:
 				default:
@@ -80,8 +96,18 @@ func (h *Hub) Run() {
 	}
 }
 
-// Broadcast will spawn a broadcast message to all connected clients
-func Broadcast(t string, msg any) {
+// ClientCount returns the number of connected clients
+func (h *Hub) ClientCount() int64 {
+	return h.clientCount.Load()
+}
+
+// Broadcast will spawn a broadcast message to all clients connected to the project.
+// Use AllProjects to broadcast to every client, and "" in single mailbox mode.
+func Broadcast(projectID, t string, msg any) {
+	broadcast(broadcastMessage{project: projectID}, t, msg)
+}
+
+func broadcast(target broadcastMessage, t string, msg any) {
 	if MessageHub == nil || MessageHub.clientCount.Load() == 0 {
 		return
 	}
@@ -96,7 +122,9 @@ func Broadcast(t string, msg any) {
 		return
 	}
 
-	go func() { MessageHub.Broadcast <- b }()
+	target.data = b
+
+	go func() { MessageHub.Broadcast <- target }()
 }
 
 // BroadCastClientError is a wrapper to broadcast client errors to the web UI
@@ -113,5 +141,6 @@ func BroadCastClientError(severity, errorType, ip, message string) {
 		message,
 	}
 
-	Broadcast("error", msg)
+	// these contain information about every SMTP client, so are only for super admins
+	broadcast(broadcastMessage{project: AllProjects, adminOnly: true}, "error", msg)
 }

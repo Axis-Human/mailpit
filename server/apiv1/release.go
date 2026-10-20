@@ -13,6 +13,7 @@ import (
 	"github.com/axllent/mailpit/internal/shortuuid"
 	"github.com/axllent/mailpit/internal/smtpd"
 	"github.com/axllent/mailpit/internal/storage"
+	"github.com/axllent/mailpit/internal/tenancy"
 	"github.com/axllent/mailpit/internal/tools"
 )
 
@@ -46,7 +47,7 @@ func ReleaseMessage(w http.ResponseWriter, r *http.Request) {
 
 	id := r.PathValue("id")
 
-	msg, err := storage.GetMessageRaw(id)
+	msg, err := storage.GetMessageRaw(tenancy.ProjectID(r), id)
 	if err != nil {
 		fourOFour(w)
 		return

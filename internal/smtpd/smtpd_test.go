@@ -1809,7 +1809,7 @@ func (m *mockDropRejectedHandler) handler(_ net.Addr, from string, to []string, 
 	return nil
 }
 
-func (m *mockDropRejectedHandler) msgIDHandler(_ net.Addr, from string, to []string, _ []byte, _ *string) (string, error) {
+func (m *mockDropRejectedHandler) msgIDHandler(_ net.Addr, from string, to []string, _ []byte, _ *string, _ string) (string, error) {
 	m.msgIDCalled++
 	m.lastMsgIDFrom = from
 	m.lastMsgIDTo = append([]string{}, to...) // copy slice

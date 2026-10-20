@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/axllent/mailpit/internal/storage"
+	"github.com/axllent/mailpit/internal/tenancy"
 )
 
 // GetMessage (method: GET) returns the Message as JSON
@@ -36,7 +37,7 @@ func GetMessage(w http.ResponseWriter, r *http.Request) {
 
 	if id == "latest" {
 		var err error
-		id, err = storage.LatestID(r)
+		id, err = storage.LatestID(tenancy.ProjectID(r), r)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(404)
@@ -45,7 +46,7 @@ func GetMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	msg, err := storage.GetMessage(id)
+	msg, err := storage.GetMessage(tenancy.ProjectID(r), id)
 	if err != nil {
 		fourOFour(w)
 		return
@@ -81,7 +82,7 @@ func GetHeaders(w http.ResponseWriter, r *http.Request) {
 
 	if id == "latest" {
 		var err error
-		id, err = storage.LatestID(r)
+		id, err = storage.LatestID(tenancy.ProjectID(r), r)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(404)
@@ -90,7 +91,7 @@ func GetHeaders(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	data, err := storage.GetMessageRaw(id)
+	data, err := storage.GetMessageRaw(tenancy.ProjectID(r), id)
 	if err != nil {
 		fourOFour(w)
 		return
@@ -136,7 +137,7 @@ func DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 
 	if id == "latest" {
 		var err error
-		id, err = storage.LatestID(r)
+		id, err = storage.LatestID(tenancy.ProjectID(r), r)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(404)
@@ -145,7 +146,7 @@ func DownloadAttachment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	a, err := storage.GetAttachmentPart(id, partID)
+	a, err := storage.GetAttachmentPart(tenancy.ProjectID(r), id, partID)
 	if err != nil {
 		fourOFour(w)
 		return
@@ -194,7 +195,7 @@ func DownloadRaw(w http.ResponseWriter, r *http.Request) {
 
 	if id == "latest" {
 		var err error
-		id, err = storage.LatestID(r)
+		id, err = storage.LatestID(tenancy.ProjectID(r), r)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(404)
@@ -203,7 +204,7 @@ func DownloadRaw(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	data, err := storage.GetMessageRaw(id)
+	data, err := storage.GetMessageRaw(tenancy.ProjectID(r), id)
 	if err != nil {
 		fourOFour(w)
 		return

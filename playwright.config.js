@@ -25,8 +25,25 @@ export default defineConfig({
 	use: { trace: "retain-on-failure" },
 	// patterns are matched against the absolute path, so anchor them to the file name
 	projects: [
-		{ name: "default", testIgnore: /[\\/]webroot\.spec\.js$/, use: { baseURL: "http://127.0.0.1:18025/" } },
+		{
+			name: "default",
+			testIgnore: /[\\/](webroot|multiproject)\.spec\.js$/,
+			use: { baseURL: "http://127.0.0.1:18025/" },
+		},
 		{ name: "webroot", testMatch: /[\\/]webroot\.spec\.js$/, use: { baseURL: "http://127.0.0.1:18026/mailpit/" } },
+		{
+			name: "multiproject",
+			testMatch: /[\\/]multiproject\.spec\.js$/,
+			use: { baseURL: "http://127.0.0.1:18027/" },
+		},
 	],
-	webServer: [server(18025, 11025), server(18026, 11026, "--webroot /mailpit/")],
+	webServer: [
+		server(18025, 11025),
+		server(18026, 11026, "--webroot /mailpit/"),
+		server(
+			18027,
+			11027,
+			"--multi-project --smtp-auth-allow-insecure --superadmin-email admin@example.com --superadmin-password admin-password",
+		),
+	],
 });

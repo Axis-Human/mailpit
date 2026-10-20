@@ -8,10 +8,11 @@ import (
 	"github.com/axllent/mailpit/config"
 	"github.com/axllent/mailpit/internal/smtpd/chaos"
 	"github.com/axllent/mailpit/internal/stats"
+	"github.com/axllent/mailpit/internal/tenancy"
 )
 
 // AppInfo returns some basic details about the running app including the latest release (unless disabled).
-func AppInfo(w http.ResponseWriter, _ *http.Request) {
+func AppInfo(w http.ResponseWriter, r *http.Request) {
 	// swagger:route GET /api/v1/info application AppInformation
 	//
 	// # Get application information
@@ -27,14 +28,28 @@ func AppInfo(w http.ResponseWriter, _ *http.Request) {
 	//		200: AppInfoResponse
 	//		400: ErrorResponse
 
+	info := stats.Load(tenancy.ProjectID(r), true)
+
+	if !tenancy.IsSuperAdmin(r) {
+		// server details and runtime statistics are shared by all projects
+		info.Database = ""
+		info.DatabaseSize = 0
+		info.RuntimeStats.Memory = 0
+		info.RuntimeStats.MessagesDeleted = 0
+		info.RuntimeStats.SMTPAccepted = 0
+		info.RuntimeStats.SMTPAcceptedSize = 0
+		info.RuntimeStats.SMTPRejected = 0
+		info.RuntimeStats.SMTPIgnored = 0
+	}
+
 	w.Header().Add("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(stats.Load(true)); err != nil {
+	if err := json.NewEncoder(w).Encode(info); err != nil {
 		httpError(w, err.Error())
 	}
 }
 
 // WebUIConfig returns configuration settings for the web UI.
-func WebUIConfig(w http.ResponseWriter, _ *http.Request) {
+func WebUIConfig(w http.ResponseWriter, r *http.Request) {
 	// swagger:route GET /api/v1/webui application WebUIConfigurationResponse
 	//
 	// # Get web UI configuration
@@ -68,7 +83,8 @@ func WebUIConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	conf.Body.SpamAssassin = config.EnableSpamAssassin != ""
-	conf.Body.ChaosEnabled = chaos.Enabled
+	// chaos changes the behaviour of the SMTP server for all projects
+	conf.Body.ChaosEnabled = chaos.Enabled && tenancy.IsSuperAdmin(r)
 	conf.Body.DuplicatesIgnored = config.IgnoreDuplicateIDs
 	conf.Body.HideDeleteAllButton = config.HideDeleteAllButton
 

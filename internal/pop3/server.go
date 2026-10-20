@@ -35,8 +35,8 @@ const (
 
 // Run will start the POP3 server if enabled
 func Run() {
-	if auth.POP3Credentials == nil || config.POP3Listen == "" {
-		// POP3 server is disabled without authentication
+	if auth.POP3Credentials == nil || config.POP3Listen == "" || config.MultiProject {
+		// POP3 server is disabled without authentication, and in multi-project mode
 		return
 	}
 
@@ -120,11 +120,11 @@ func handleClient(conn net.Conn) {
 	defer func() {
 		if state == UPDATE {
 			if len(toDelete) > 0 {
-				if err := storage.DeleteMessages(toDelete); err != nil {
+				if err := storage.DeleteMessages("", toDelete); err != nil {
 					logger.Log().Errorf("[pop3] error deleting: %s", err.Error())
 				}
 				// Update web UI to remove deleted messages
-				websockets.Broadcast("prune", nil)
+				websockets.Broadcast("", "prune", nil)
 			}
 		}
 
@@ -338,7 +338,7 @@ func handleTransactionCommand(conn net.Conn, cmd string, args []string, messages
 		}
 
 		m := messages[nr-1]
-		raw, err := storage.GetMessageRaw(m.ID)
+		raw, err := storage.GetMessageRaw("", m.ID)
 		if err != nil {
 			sendResponse(conn, "-ERR no such message")
 			return

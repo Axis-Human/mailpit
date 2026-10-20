@@ -61,6 +61,12 @@ type Client struct {
 
 	// Buffered channel of outbound messages.
 	send chan *websocket.PreparedMessage
+
+	// The project the client receives messages for ("" in single mailbox mode).
+	project string
+
+	// Whether the client is allowed to receive global messages such as SMTP errors.
+	admin bool
 }
 
 // ReadPump is used here solely to monitor the connection, not to actually receive messages.
@@ -115,8 +121,9 @@ func (c *Client) writePump() {
 	}
 }
 
-// ServeWs handles websocket requests from the peer.
-func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
+// ServeWs handles websocket requests from the peer. The request has already been
+// authenticated by the server, the client receives the messages for the project.
+func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request, projectID string, admin bool) {
 	if auth.UICredentials != nil {
 		user, pass, ok := r.BasicAuth()
 
@@ -137,7 +144,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &Client{hub: hub, conn: conn, send: make(chan *websocket.PreparedMessage, 256)}
+	client := &Client{hub: hub, conn: conn, send: make(chan *websocket.PreparedMessage, 256), project: projectID, admin: admin}
 	client.hub.register <- client
 
 	// Allow collection of memory referenced by the caller by doing all work in new goroutines.

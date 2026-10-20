@@ -35,7 +35,7 @@ func sendData(c net.Conn, m string) {
 // Get the latest 100 messages
 func getMessages() ([]message, error) {
 	messages := []message{}
-	list, err := storage.List(0, 0, 100)
+	list, err := storage.List("", 0, 0, 100)
 	if err != nil {
 		return messages, err
 	}
@@ -53,7 +53,7 @@ func getMessages() ([]message, error) {
 // POP3 TOP command returns the headers, followed by the next x lines
 func getTop(id string, nr int) (string, string, error) {
 	var header, body string
-	raw, err := storage.GetMessageRaw(id)
+	raw, err := storage.GetMessageRaw("", id)
 	if err != nil {
 		return header, body, errors.New("-ERR no such message")
 	}

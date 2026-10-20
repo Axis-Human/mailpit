@@ -244,6 +244,22 @@ var (
 
 	// DemoMode disables SMTP relay, link checking & HTTP send functionality
 	DemoMode = false
+
+	// MultiProject enables projects, users and per-project API keys. Every message belongs to a project,
+	// the web UI requires a login and SMTP / API access requires a project API key.
+	MultiProject bool
+
+	// SuperAdminEmail is the email of the super admin created on startup when MultiProject is enabled
+	SuperAdminEmail string
+
+	// SuperAdminPassword is the password for the super admin created on startup (when it does not exist yet)
+	SuperAdminPassword string
+
+	// SuperAdminResetPassword forces the super admin password to SuperAdminPassword on every startup
+	SuperAdminResetPassword bool
+
+	// SessionHours is the number of hours a web UI login session remains valid
+	SessionHours = 168
 )
 
 // AutoTag struct for auto-tagging
@@ -658,6 +674,10 @@ func VerifyConfig() error {
 
 	// separate forwarding config validation to account for environment variables
 	if err := validateForwardConfig(); err != nil {
+		return err
+	}
+
+	if err := verifyMultiProjectConfig(); err != nil {
 		return err
 	}
 

@@ -136,7 +136,7 @@ func loadIDs() error {
 
 		start := 0
 		for {
-			page, err := storage.List(start, 0, pageSize)
+			page, err := storage.List(storage.AllProjects, start, 0, pageSize)
 			if err != nil {
 				return err
 			}
@@ -249,7 +249,7 @@ func saveMessages() error {
 			}
 		} else {
 			var err error
-			b, err = storage.GetMessageRaw(id)
+			b, err = storage.GetMessageRaw(storage.AllProjects, id)
 			if err != nil {
 				logger.Log().Errorf("error fetching message %s: %s", id, err.Error())
 				continue

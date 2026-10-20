@@ -59,7 +59,7 @@ func ReindexAll() {
 		updates := []updateStruct{}
 
 		for _, id := range ids {
-			raw, err := GetMessageRaw(id)
+			raw, err := GetMessageRaw(AllProjects, id)
 			if err != nil {
 				logger.Log().Error(err)
 				continue
@@ -73,7 +73,7 @@ func ReindexAll() {
 				continue
 			}
 
-			meta, _ := GetMetadata(id)
+			meta, _ := GetMetadata(AllProjects, id)
 
 			fromJSON := addressToSlice(env, "From")
 			if len(fromJSON) > 0 {

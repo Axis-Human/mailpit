@@ -1,6 +1,7 @@
 <script>
 import CommonMixins from "../mixins/CommonMixins";
 import { Toast } from "bootstrap";
+import { auth } from "../stores/auth";
 import { mailbox } from "../stores/mailbox";
 import { pagination } from "../stores/pagination";
 
@@ -33,6 +34,10 @@ export default {
 
 		const proto = location.protocol === "https:" ? "wss" : "ws";
 		this.socketURI = proto + "://" + document.location.host + this.resolve(`/api/events`);
+		if (auth.multiProject && auth.project) {
+			// a websocket cannot send headers, so the project is a query argument
+			this.socketURI += "?project=" + encodeURIComponent(auth.project.Slug);
+		}
 
 		this.socketBreakReset();
 		this.connect();

@@ -5,11 +5,12 @@ import (
 	"net/http"
 
 	"github.com/axllent/mailpit/internal/storage"
+	"github.com/axllent/mailpit/internal/tenancy"
 	"github.com/axllent/mailpit/server/websockets"
 )
 
 // GetAllTags (method: GET) will get all tags currently in use
-func GetAllTags(w http.ResponseWriter, _ *http.Request) {
+func GetAllTags(w http.ResponseWriter, r *http.Request) {
 	// swagger:route GET /api/v1/tags tags GetAllTags
 	//
 	// # Get all current tags
@@ -26,7 +27,7 @@ func GetAllTags(w http.ResponseWriter, _ *http.Request) {
 	//    400: ErrorResponse
 
 	w.Header().Add("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(storage.GetAllTags()); err != nil {
+	if err := json.NewEncoder(w).Encode(storage.GetAllTags(tenancy.ProjectID(r))); err != nil {
 		httpError(w, err.Error())
 	}
 }
@@ -68,7 +69,7 @@ func SetMessageTags(w http.ResponseWriter, r *http.Request) {
 
 	if len(ids) > 0 {
 		for _, id := range ids {
-			if _, err := storage.SetMessageTags(id, data.Tags); err != nil {
+			if _, err := storage.SetMessageTags(tenancy.ProjectID(r), id, data.Tags); err != nil {
 				httpError(w, err.Error())
 				return
 			}
@@ -110,12 +111,12 @@ func RenameTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := storage.RenameTag(tag, data.Name); err != nil {
+	if err := storage.RenameTag(tenancy.ProjectID(r), tag, data.Name); err != nil {
 		httpError(w, err.Error())
 		return
 	}
 
-	websockets.Broadcast("prune", nil)
+	websockets.Broadcast(tenancy.ProjectID(r), "prune", nil)
 
 	w.Header().Add("Content-Type", "text/plain")
 	_, _ = w.Write([]byte("ok"))
@@ -140,12 +141,12 @@ func DeleteTag(w http.ResponseWriter, r *http.Request) {
 
 	tag := r.PathValue("tag")
 
-	if err := storage.DeleteTag(tag); err != nil {
+	if err := storage.DeleteTag(tenancy.ProjectID(r), tag); err != nil {
 		httpError(w, err.Error())
 		return
 	}
 
-	websockets.Broadcast("prune", nil)
+	websockets.Broadcast(tenancy.ProjectID(r), "prune", nil)
 
 	w.Header().Add("Content-Type", "text/plain")
 	_, _ = w.Write([]byte("ok"))

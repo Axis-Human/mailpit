@@ -20,6 +20,7 @@ import (
 	"github.com/axllent/mailpit/config"
 	"github.com/axllent/mailpit/internal/logger"
 	"github.com/axllent/mailpit/internal/storage"
+	"github.com/axllent/mailpit/internal/tenancy"
 	"github.com/axllent/mailpit/internal/tools"
 )
 
@@ -97,6 +98,13 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	id := parts[0]
 	uri := parts[1]
+
+	// the message must belong to a project the caller has access to
+	if projectID, ok := storage.MessageProjectID(id); !ok || !tenancy.FromRequest(r).CanAccess(projectID) {
+		logger.Log().Warnf("[proxy] message %s not found", id)
+		httpError(w, "Error: invalid request")
+		return
+	}
 
 	found, err := hasAsset(id, uri)
 	if err != nil {
@@ -284,7 +292,8 @@ func hasAsset(id, url string) (bool, error) {
 // buildAssets parses the stored message HTML and returns the initial set of
 // linked asset URLs. Callers must hold assetsMutex.
 func buildAssets(id string) (MessageAssets, error) {
-	msg, err := storage.GetMessage(id)
+	// the caller has already checked that the message belongs to the project
+	msg, err := storage.GetMessage(storage.AllProjects, id)
 	if err != nil {
 		return MessageAssets{}, err
 	}

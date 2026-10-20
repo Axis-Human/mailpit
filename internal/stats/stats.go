@@ -81,8 +81,9 @@ func getBackoff(errCount int) time.Duration {
 	return backoff
 }
 
-// Load the current statistics
-func Load(detectLatestVersion bool) AppInformation {
+// Load the current statistics. The message totals are those of the project,
+// use storage.AllProjects for the totals of all projects.
+func Load(projectID string, detectLatestVersion bool) AppInformation {
 	info := AppInformation{}
 	info.Version = config.Version
 
@@ -131,9 +132,9 @@ func Load(detectLatestVersion bool) AppInformation {
 
 	info.Database = config.Database
 	info.DatabaseSize = storage.DbSize()
-	info.Messages = storage.CountTotal()
-	info.Unread = storage.CountUnread()
-	info.Tags = storage.GetAllTagsCount()
+	info.Messages = storage.CountTotal(projectID)
+	info.Unread = storage.CountUnread(projectID)
+	info.Tags = storage.GetAllTagsCount(projectID)
 
 	return info
 }

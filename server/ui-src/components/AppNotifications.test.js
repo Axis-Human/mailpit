@@ -24,6 +24,7 @@ const setup = (permission = "granted", base = "/") => {
 	const imports = {
 		"../mixins/CommonMixins": { default: {} },
 		bootstrap: { Toast: {} },
+		"../stores/auth": { auth: { multiProject: false, project: null } },
 		"../stores/mailbox": { mailbox },
 		"../stores/pagination": { pagination: {} },
 	};

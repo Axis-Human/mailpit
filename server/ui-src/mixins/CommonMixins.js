@@ -3,6 +3,7 @@ import dayjs from "dayjs";
 import ColorHash from "color-hash";
 import { Modal, Offcanvas } from "bootstrap";
 import { limitOptions } from "../stores/pagination";
+import { auth } from "../stores/auth";
 
 // BootstrapElement is used to return a fake Bootstrap element
 // if the ID returns nothing to prevent errors.
@@ -208,6 +209,11 @@ export default {
 
 		// Ajax error message
 		handleError(error) {
+			// an expired session returns to the login page
+			if (auth.multiProject && error.response?.status === 401) {
+				return;
+			}
+
 			// handle error
 			if (error.response && error.response.data) {
 				// The request was made and the server responded with a status code

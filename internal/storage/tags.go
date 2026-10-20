@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -19,8 +20,18 @@ var (
 	addressPlusRe = regexp.MustCompile(`(?U)^(.*){1,}\+(.*)@`)
 )
 
-// SetMessageTags will set the tags for a given database ID, removing any not in the array
-func SetMessageTags(id string, tags []string) ([]string, error) {
+// SetMessageTags will set the tags for a given database ID, removing any not in the array.
+// The message must belong to the project.
+func SetMessageTags(projectID, id string, tags []string) ([]string, error) {
+	if !messageInProject(projectID, id) {
+		return []string{}, errors.New("message not found")
+	}
+
+	return setMessageTags(projectID, id, tags)
+}
+
+// setMessageTags sets the tags for a message in the project, without checking the message exists
+func setMessageTags(projectID, id string, tags []string) ([]string, error) {
 	// Clean and deduplicate incoming tags (case-insensitive)
 	seen := make(map[string]struct{})
 	applyTags := []string{}
@@ -56,7 +67,7 @@ func SetMessageTags(id string, tags []string) ([]string, error) {
 		if _, exists := currentSet[strings.ToLower(t)]; exists {
 			continue
 		}
-		name, err := addMessageTag(id, t)
+		name, err := addMessageTag(projectID, id, t)
 		if err != nil {
 			return []string{}, err
 		}
@@ -81,15 +92,15 @@ func SetMessageTags(id string, tags []string) ([]string, error) {
 		Tags []string
 	}{ID: id, Tags: applyTags}
 
-	websockets.Broadcast("update", d)
+	websockets.Broadcast(projectID, "update", d)
 
 	return tagNames, nil
 }
 
 // AddMessageTag adds a tag to a message
-func addMessageTag(id, name string) (string, error) {
-	// Ensure the tag row exists; the UNIQUE index on Name makes concurrent inserts safe
-	if _, err := db.Exec(fmt.Sprintf(`INSERT OR IGNORE INTO %s (Name) VALUES (?)`, tenant("tags")), name); err != nil { // #nosec
+func addMessageTag(projectID, id, name string) (string, error) {
+	// Ensure the tag row exists; the UNIQUE index on (ProjectID, Name) makes concurrent inserts safe
+	if _, err := db.Exec(fmt.Sprintf(`INSERT OR IGNORE INTO %s (ProjectID, Name) VALUES (?, ?)`, tenant("tags")), projectID, name); err != nil { // #nosec
 		return name, err
 	}
 
@@ -99,6 +110,7 @@ func addMessageTag(id, name string) (string, error) {
 	if err := sqlf.From(tenant("tags")).
 		Select("ID").To(&tagID).
 		Select("Name").To(&foundName).
+		Where("ProjectID = ?", projectID).
 		Where("Name = ?", name).
 		QueryRowAndClose(context.TODO(), db); err != nil {
 		return name, err
@@ -160,14 +172,16 @@ func deleteMessageTag(id, name string) error {
 }
 
 // GetAllTags returns all used tags
-func GetAllTags() []string {
+func GetAllTags(projectID string) []string {
 	var tags = []string{}
 	var name string
 
-	if err := sqlf.
+	q := sqlf.
 		Select(`DISTINCT Name`).
 		From(tenant("tags")).To(&name).
-		OrderBy("Name").
+		OrderBy("Name")
+
+	if err := scopeProject(q, "ProjectID", projectID).
 		QueryAndClose(context.TODO(), db, func(_ *sql.Rows) {
 			tags = append(tags, name)
 		}); err != nil {
@@ -178,20 +192,23 @@ func GetAllTags() []string {
 }
 
 // GetAllTagsCount returns all used tags with their total messages
-func GetAllTagsCount() map[string]int64 {
+func GetAllTagsCount(projectID string) map[string]int64 {
 	var tags = make(map[string]int64)
 	var name string
 	var total float64 // use float64 for rqlite compatibility
 
-	if err := sqlf.
+	q := sqlf.
 		Select(`Name`).To(&name).
 		Select(`COUNT(`+tenant("message_tags.TagID")+`) as total`).To(&total).
 		From(tenant("tags")).
 		LeftJoin(tenant("message_tags"), tenant("tags.ID")+" = "+tenant("message_tags.TagID")).
 		GroupBy(tenant("message_tags.TagID")).
-		OrderBy("Name").
+		OrderBy("Name")
+
+	if err := scopeProject(q, tenant("tags.ProjectID"), projectID).
 		QueryAndClose(context.TODO(), db, func(_ *sql.Rows) {
-			tags[name] = int64(total)
+			// tags with the same name in different projects are added together
+			tags[name] += int64(total)
 		}); err != nil {
 		logger.Log().Errorf("[db] %s", err.Error())
 	}
@@ -200,7 +217,7 @@ func GetAllTagsCount() map[string]int64 {
 }
 
 // RenameTag renames a tag
-func RenameTag(from, to string) error {
+func RenameTag(projectID, from, to string) error {
 	to = tools.CleanTag(to)
 	if to == "" || !config.ValidTagRegexp.MatchString(to) {
 		return fmt.Errorf("invalid tag name: %s", to)
@@ -216,7 +233,7 @@ func RenameTag(from, to string) error {
 		Select(`ID`).To(&id).
 		Where(`Name = ?`, from).
 		Limit(1)
-	err := q.QueryRowAndClose(context.Background(), db)
+	err := scopeProject(q, "ProjectID", projectID).QueryRowAndClose(context.Background(), db)
 	if err != nil {
 		return fmt.Errorf("tag not found: %s", from)
 	}
@@ -227,7 +244,7 @@ func RenameTag(from, to string) error {
 		Where(`Name = ?`, to).
 		Where(`ID != ?`, id).
 		Limit(1)
-	err = q.QueryRowAndClose(context.Background(), db)
+	err = scopeProject(q, "ProjectID", projectID).QueryRowAndClose(context.Background(), db)
 	if err == nil || existsID != 0 {
 		return fmt.Errorf("tag already exists: %s", to)
 	}
@@ -241,14 +258,14 @@ func RenameTag(from, to string) error {
 }
 
 // DeleteTag deleted a tag and removed all references to the tag
-func DeleteTag(tag string) error {
+func DeleteTag(projectID, tag string) error {
 	var id int
 
 	q := sqlf.From(tenant("tags")).
 		Select(`ID`).To(&id).
 		Where(`Name = ?`, tag).
 		Limit(1)
-	err := q.QueryRowAndClose(context.Background(), db)
+	err := scopeProject(q, "ProjectID", projectID).QueryRowAndClose(context.Background(), db)
 	if err != nil {
 		return fmt.Errorf("tag not found: %s", tag)
 	}

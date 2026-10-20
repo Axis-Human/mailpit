@@ -115,6 +115,13 @@ func init() {
 	rootCmd.Flags().BoolVar(&config.DisableHTTPCompression, "disable-http-compression", config.DisableHTTPCompression, "Disable HTTP compression support (web UI & API)")
 	rootCmd.Flags().BoolVar(&config.HideDeleteAllButton, "hide-delete-all-button", config.HideDeleteAllButton, "Hide the \"Delete all\" button in the web UI")
 
+	// Multi-project mode
+	rootCmd.Flags().BoolVar(&config.MultiProject, "multi-project", config.MultiProject, "Enable projects, users and per-project API keys")
+	rootCmd.Flags().StringVar(&config.SuperAdminEmail, "superadmin-email", config.SuperAdminEmail, "Email of the super admin to create when it does not exist (multi-project)")
+	rootCmd.Flags().StringVar(&config.SuperAdminPassword, "superadmin-password", config.SuperAdminPassword, "Password of the super admin to create, prefer the MP_SUPERADMIN_PASSWORD environment variable")
+	rootCmd.Flags().BoolVar(&config.SuperAdminResetPassword, "superadmin-reset-password", config.SuperAdminResetPassword, "Reset the super admin password to --superadmin-password on startup")
+	rootCmd.Flags().IntVar(&config.SessionHours, "session-hours", config.SessionHours, "Hours a web UI login remains valid (multi-project)")
+
 	// Send API
 	rootCmd.Flags().StringVar(&config.SendAPIAuthFile, "send-api-auth-file", config.SendAPIAuthFile, "A password file for Send API authentication")
 	rootCmd.Flags().BoolVar(&config.SendAPIAuthAcceptAny, "send-api-auth-accept-any", config.SendAPIAuthAcceptAny, "Accept any username and password for the Send API endpoint, including none")
@@ -280,6 +287,15 @@ func initConfigFromEnv() {
 	}
 	if getEnabledFromEnv("MP_HIDE_DELETE_ALL_BUTTON") {
 		config.HideDeleteAllButton = true
+	}
+
+	// Multi-project mode
+	config.MultiProject = getEnabledFromEnv("MP_MULTI_PROJECT")
+	config.SuperAdminEmail = os.Getenv("MP_SUPERADMIN_EMAIL")
+	config.SuperAdminPassword = os.Getenv("MP_SUPERADMIN_PASSWORD")
+	config.SuperAdminResetPassword = getEnabledFromEnv("MP_SUPERADMIN_RESET_PASSWORD")
+	if len(os.Getenv("MP_SESSION_HOURS")) > 0 {
+		config.SessionHours, _ = strconv.Atoi(os.Getenv("MP_SESSION_HOURS"))
 	}
 
 	// Send API

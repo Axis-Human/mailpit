@@ -1,0 +1,55 @@
+# Mailpit multi-project deployment with Docker Compose.
+# See docs/multi-project.md for the step by step guide.
+#
+# The web UI & API listen on port 8025 (put a reverse proxy with HTTPS in front of it).
+# SMTP is plain TCP, so its port is published directly on the server.
+
+services:
+  mailpit:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      # Projects, users & API keys. Everything requires a login or a project API key.
+      - MP_MULTI_PROJECT=true
+      # The super admin is created on first start. The password is only used when the account
+      # does not exist yet, change it afterwards in the web UI.
+      - MP_SUPERADMIN_EMAIL=${MP_SUPERADMIN_EMAIL:?Set the email of the super admin}
+      - MP_SUPERADMIN_PASSWORD=${MP_SUPERADMIN_PASSWORD:?Set the password of the super admin (min 8 characters)}
+      # Set to true for a single start to reset the super admin password to MP_SUPERADMIN_PASSWORD
+      - MP_SUPERADMIN_RESET_PASSWORD=${MP_SUPERADMIN_RESET_PASSWORD:-false}
+      - MP_DATABASE=/data/mailpit.db
+      # Messages kept per project, and the maximum message size in MB
+      - MP_MAX_MESSAGES=${MP_MAX_MESSAGES:-500}
+      - MP_MAX_MESSAGE_SIZE=${MP_MAX_MESSAGE_SIZE:-25}
+      # Optional: delete messages older than this, eg: 7d
+      - MP_MAX_AGE=${MP_MAX_AGE:-}
+      # SMTP clients authenticate with the project API key as the password. Without a TLS certificate
+      # the key is sent unencrypted, which is only acceptable on a private network. For STARTTLS set
+      # MP_SMTP_AUTH_ALLOW_INSECURE=false and provide MP_SMTP_TLS_CERT & MP_SMTP_TLS_KEY
+      # (file paths, or "sans:<hostname>" for a self-signed certificate).
+      - MP_SMTP_AUTH_ALLOW_INSECURE=${MP_SMTP_AUTH_ALLOW_INSECURE:-true}
+      - MP_SMTP_TLS_CERT=${MP_SMTP_TLS_CERT:-}
+      - MP_SMTP_TLS_KEY=${MP_SMTP_TLS_KEY:-}
+      # Hours a web UI login stays valid
+      - MP_SESSION_HOURS=${MP_SESSION_HOURS:-168}
+      - MP_DISABLE_VERSION_CHECK=true
+      - MP_SMTP_DISABLE_RDNS=true
+    volumes:
+      - mailpit-data:/data
+    ports:
+      # SMTP, change the published port with SMTP_PORT
+      - "${SMTP_PORT:-1025}:1025"
+    expose:
+      - "8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  mailpit-data:

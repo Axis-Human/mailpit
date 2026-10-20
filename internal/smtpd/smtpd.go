@@ -52,13 +52,17 @@ type Handler func(remoteAddr net.Addr, from string, to []string, data []byte) er
 
 // MsgIDHandler function called upon successful receipt of an email. Returns a message ID.
 // Results in a "250 2.0.0 Ok: queued as <message-id>" response.
-type MsgIDHandler func(remoteAddr net.Addr, from string, to []string, data []byte, username *string) (string, error)
+type MsgIDHandler func(remoteAddr net.Addr, from string, to []string, data []byte, username *string, projectID string) (string, error)
 
 // HandlerRcpt function called on RCPT. Return accept status.
 type HandlerRcpt func(remoteAddr net.Addr, from string, to string) bool
 
 // AuthHandler function called when a login attempt is performed. Returns true if credentials are correct.
 type AuthHandler func(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte) (bool, error)
+
+// AuthProjectHandler function called when a login attempt is performed in multi-project mode.
+// Returns the ID of the project the credentials belong to when the credentials are correct.
+type AuthProjectHandler func(remoteAddr net.Addr, mechanism string, username []byte, password []byte, shared []byte) (projectID string, ok bool, err error)
 
 // ErrServerClosed is the default message when a server closes a connection
 var ErrServerClosed = errors.New("Server has been closed")
@@ -114,9 +118,10 @@ type Server struct {
 	Addr                     string // TCP address to listen on, defaults to ":25" (all addresses, port 25) if empty
 	AppName                  string
 	AuthHandler              AuthHandler
-	AuthMechs                map[string]bool // Override list of allowed authentication mechanisms. Currently supported: LOGIN, PLAIN, CRAM-MD5. Enabling LOGIN and PLAIN will reduce RFC 4954 compliance.
-	AuthRequired             bool            // Require authentication for every command except AUTH, EHLO, HELO, NOOP, RSET or QUIT as per RFC 4954. Ignored if AuthHandler is not configured.
-	DisableReverseDNS        bool            // Disable reverse DNS lookups, enforces "unknown" hostname
+	AuthProjectHandler       AuthProjectHandler // Optional, used instead of AuthHandler to also set the project of the session.
+	AuthMechs                map[string]bool    // Override list of allowed authentication mechanisms. Currently supported: LOGIN, PLAIN, CRAM-MD5. Enabling LOGIN and PLAIN will reduce RFC 4954 compliance.
+	AuthRequired             bool               // Require authentication for every command except AUTH, EHLO, HELO, NOOP, RSET or QUIT as per RFC 4954. Ignored if AuthHandler is not configured.
+	DisableReverseDNS        bool               // Disable reverse DNS lookups, enforces "unknown" hostname
 	Handler                  Handler
 	HandlerRcpt              HandlerRcpt
 	Hostname                 string
@@ -301,6 +306,7 @@ type session struct {
 	tls           bool
 	authenticated bool
 	username      *string // username, nil if not authenticated
+	projectID     string  // project of the authenticated user, blank when not in multi-project mode
 }
 
 // Create new session from connection.
@@ -659,7 +665,7 @@ loop:
 				}
 				s.writef("250 2.0.0 Ok: queued")
 			} else if len(to) > 0 && s.srv.MsgIDHandler != nil {
-				msgID, err := s.srv.MsgIDHandler(s.conn.RemoteAddr(), from, to, buffer.Bytes(), s.username)
+				msgID, err := s.srv.MsgIDHandler(s.conn.RemoteAddr(), from, to, buffer.Bytes(), s.username, s.projectID)
 				if err != nil {
 					if checkErrFormatRE.MatchString(err.Error()) {
 						s.writef("%s", err.Error())
@@ -1094,7 +1100,7 @@ func (s *session) handleAuthLogin(arg string) (bool, error) {
 	}
 
 	// Validate credentials.
-	authenticated, err := s.srv.AuthHandler(s.conn.RemoteAddr(), "LOGIN", username, password, nil)
+	authenticated, err := s.authenticate("LOGIN", username, password, nil)
 	if authenticated {
 		uname := string(username)
 		s.username = &uname
@@ -1128,7 +1134,7 @@ func (s *session) handleAuthPlain(arg string) (bool, error) {
 	}
 
 	// Validate credentials.
-	authenticated, err := s.srv.AuthHandler(s.conn.RemoteAddr(), "PLAIN", parts[1], parts[2], nil)
+	authenticated, err := s.authenticate("PLAIN", parts[1], parts[2], nil)
 	if authenticated {
 		uname := string(parts[1])
 		s.username = &uname
@@ -1164,9 +1170,26 @@ func (s *session) handleAuthCramMD5() (bool, error) {
 	}
 
 	// Validate credentials.
-	authenticated, err := s.srv.AuthHandler(s.conn.RemoteAddr(), "CRAM-MD5", []byte(fields[0]), []byte(fields[1]), []byte(shared))
+	authenticated, err := s.authenticate("CRAM-MD5", []byte(fields[0]), []byte(fields[1]), []byte(shared))
 
 	return authenticated, err
+}
+
+// authenticate validates the credentials using the auth handler, and sets the session project
+// when the handler returns one.
+func (s *session) authenticate(mechanism string, username, password, shared []byte) (bool, error) {
+	s.projectID = ""
+
+	if s.srv.AuthProjectHandler != nil {
+		projectID, ok, err := s.srv.AuthProjectHandler(s.conn.RemoteAddr(), mechanism, username, password, shared)
+		if ok {
+			s.projectID = projectID
+		}
+
+		return ok, err
+	}
+
+	return s.srv.AuthHandler(s.conn.RemoteAddr(), mechanism, username, password, shared)
 }
 
 // Extract and validate email address from a regex match.
